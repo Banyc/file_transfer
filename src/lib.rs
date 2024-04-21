@@ -99,7 +99,7 @@ pub struct FileTransferStats {
 }
 impl core::fmt::Display for FileTransferStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(
+        write!(
             f,
             "bytes: {bytes}; throughput: {throughput_mib_s:.2} MiB/s; latency: {latency_ms:.2} ms;",
             bytes = self.bytes,
