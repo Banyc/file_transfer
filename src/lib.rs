@@ -23,15 +23,16 @@ impl FileTransferCommand {
         write: impl AsyncWrite + Unpin,
     ) -> io::Result<FileTransferStats> {
         let start = Instant::now();
-        let n = match self {
+        let bytes = match self {
             FileTransferCommand::Push(args) => args.push_file(write).await?,
             FileTransferCommand::Pull(args) => args.pull_file(read).await?,
         };
         let duration = start.elapsed();
-        let throughput = n as f64 / duration.as_secs_f64();
+        let throughput = bytes as f64 / duration.as_secs_f64();
         let throughput_mib_s = throughput / 1024. / 1024.;
         let latency_ms = duration.as_secs_f64() * 1000.;
         Ok(FileTransferStats {
+            bytes,
             throughput_mib_s,
             latency_ms,
         })
@@ -92,6 +93,7 @@ pub async fn pull_file(
 
 #[derive(Debug, Clone)]
 pub struct FileTransferStats {
+    pub bytes: usize,
     pub throughput_mib_s: f64,
     pub latency_ms: f64,
 }
@@ -99,7 +101,8 @@ impl core::fmt::Display for FileTransferStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "throughput: {throughput_mib_s:.2} MiB/s, latency: {latency_ms:.2} ms",
+            "bytes: {bytes}; throughput: {throughput_mib_s:.2} MiB/s; latency: {latency_ms:.2} ms;",
+            bytes = self.bytes,
             throughput_mib_s = self.throughput_mib_s,
             latency_ms = self.latency_ms,
         )
