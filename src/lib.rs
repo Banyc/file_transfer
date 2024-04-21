@@ -95,3 +95,13 @@ pub struct FileTransferStats {
     pub throughput_mib_s: f64,
     pub latency_ms: f64,
 }
+impl core::fmt::Display for FileTransferStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "throughput: {throughput_mib_s:.2} MiB/s, latency: {latency_ms:.2} ms",
+            throughput_mib_s = self.throughput_mib_s,
+            latency_ms = self.latency_ms,
+        )
+    }
+}
