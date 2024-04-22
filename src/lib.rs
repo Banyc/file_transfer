@@ -1,14 +1,20 @@
 use std::{
     io,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::Instant,
 };
 
 use clap::{Args, Subcommand};
+use read_exact::ReadExact;
 use tokio::{
     fs::File,
-    io::{AsyncRead, AsyncWrite, BufReader},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
 };
+
+mod read_exact;
+
+const CLOSE: u8 = 0;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum FileTransferCommand {
@@ -19,13 +25,22 @@ pub enum FileTransferCommand {
 impl FileTransferCommand {
     pub async fn perform(
         &self,
-        read: impl AsyncRead + Unpin,
-        write: impl AsyncWrite + Unpin,
+        mut read: impl AsyncRead + Unpin + Send + 'static,
+        mut write: impl AsyncWrite + Unpin,
     ) -> io::Result<FileTransferStats> {
         let start = Instant::now();
         let bytes = match self {
-            FileTransferCommand::Push(args) => args.push_file(write).await?,
-            FileTransferCommand::Pull(args) => args.pull_file(read).await?,
+            FileTransferCommand::Push(args) => {
+                let (bytes, _) = args.push_file(write).await?;
+                let msg = read.read_u8().await?;
+                assert_eq!(msg, CLOSE);
+                bytes
+            }
+            FileTransferCommand::Pull(args) => {
+                let (bytes, _) = args.pull_file(read).await?;
+                write.write_u8(CLOSE).await?;
+                bytes
+            }
         };
         let duration = start.elapsed();
         let throughput = bytes as f64 / duration.as_secs_f64();
@@ -45,21 +60,28 @@ pub struct PushFileArgs {
 }
 
 impl PushFileArgs {
-    pub async fn push_file(&self, write: impl AsyncWrite + Unpin) -> io::Result<usize> {
+    pub async fn push_file<W>(&self, write: W) -> io::Result<(usize, W)>
+    where
+        W: AsyncWrite + Unpin,
+    {
         push_file(&self.source_file, write).await
     }
 }
 
-pub async fn push_file(
-    source_file: impl AsRef<Path>,
-    mut write: impl AsyncWrite + Unpin,
-) -> io::Result<usize> {
-    let file = File::open(source_file).await.unwrap();
+pub async fn push_file<W>(source_file: impl AsRef<Path>, mut write: W) -> io::Result<(usize, W)>
+where
+    W: AsyncWrite + Unpin,
+{
+    let file = File::open(source_file).await?;
+    let bytes = file.metadata().await?.size();
     let mut file = BufReader::new(file);
 
-    let read = tokio::io::copy(&mut file, &mut write).await.unwrap();
+    write.write_u64(bytes).await?;
+    let read_bytes = tokio::io::copy(&mut file, &mut write).await?;
 
-    Ok(usize::try_from(read).unwrap())
+    assert_eq!(bytes, read_bytes, "file modified during transmission");
+
+    Ok((usize::try_from(read_bytes).unwrap(), write))
 }
 
 #[derive(Debug, Clone, Args)]
@@ -68,27 +90,35 @@ pub struct PullFileArgs {
 }
 
 impl PullFileArgs {
-    pub async fn pull_file(&self, read: impl AsyncRead + Unpin) -> io::Result<usize> {
+    pub async fn pull_file<R>(&self, read: R) -> io::Result<(usize, R)>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
         pull_file(&self.output_file, read).await
     }
 }
 
-pub async fn pull_file(
-    output_file: impl AsRef<Path>,
-    mut read: impl AsyncRead + Unpin,
-) -> io::Result<usize> {
+pub async fn pull_file<R>(output_file: impl AsRef<Path>, mut read: R) -> io::Result<(usize, R)>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
     let _ = tokio::fs::remove_file(&output_file).await;
     let mut file = File::options()
         .write(true)
         .create(true)
         .truncate(true)
         .open(output_file)
-        .await
-        .unwrap();
+        .await?;
 
-    let written = tokio::io::copy(&mut read, &mut file).await.unwrap();
+    let bytes = read.read_u64().await?;
+    let read_exact = ReadExact::new(read, usize::try_from(bytes).unwrap());
+    let mut read = read_exact.into_async_read();
+    let written = tokio::io::copy(&mut read, &mut file).await?;
 
-    Ok(usize::try_from(written).unwrap())
+    Ok((
+        usize::try_from(written).unwrap(),
+        read.into_inner().into_inner(),
+    ))
 }
 
 #[derive(Debug, Clone)]
