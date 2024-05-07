@@ -23,35 +23,47 @@ pub enum FileTransferCommand {
 }
 
 impl FileTransferCommand {
-    pub async fn perform(
+    pub async fn perform<R, W>(
         &self,
-        mut read: impl AsyncRead + Unpin + Send + 'static,
-        mut write: impl AsyncWrite + Unpin,
-    ) -> io::Result<FileTransferStats> {
+        mut read: R,
+        mut write: W,
+    ) -> io::Result<FileTransferResult<R, W>>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin,
+    {
         let start = Instant::now();
-        let bytes = match self {
+        let (bytes, read, write) = match self {
             FileTransferCommand::Push(args) => {
-                let (bytes, _) = args.push_file(write).await?;
+                let (bytes, write) = args.push_file(write).await?;
                 let msg = read.read_u8().await?;
                 assert_eq!(msg, CLOSE);
-                bytes
+                (bytes, read, write)
             }
             FileTransferCommand::Pull(args) => {
-                let (bytes, _) = args.pull_file(read).await?;
+                let (bytes, read) = args.pull_file(read).await?;
                 write.write_u8(CLOSE).await?;
-                bytes
+                (bytes, read, write)
             }
         };
         let duration = start.elapsed();
         let throughput = bytes as f64 / duration.as_secs_f64();
         let throughput_mib_s = throughput / 1024. / 1024.;
         let latency_ms = duration.as_secs_f64() * 1000.;
-        Ok(FileTransferStats {
+        let stats = FileTransferStats {
             bytes,
             throughput_mib_s,
             latency_ms,
-        })
+        };
+        Ok(FileTransferResult { stats, read, write })
     }
+}
+
+#[derive(Debug)]
+pub struct FileTransferResult<R, W> {
+    pub stats: FileTransferStats,
+    pub read: R,
+    pub write: W,
 }
 
 #[derive(Debug, Clone, Args)]
