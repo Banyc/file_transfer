@@ -1,6 +1,5 @@
 use std::{
     io,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -85,7 +84,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let file = File::open(source_file).await?;
-    let bytes = file.metadata().await?.size();
+    let bytes = file.metadata().await?.len();
     let mut file = BufReader::new(file);
 
     write.write_u64(bytes).await?;
